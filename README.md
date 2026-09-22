@@ -37,7 +37,7 @@ curl "https://<your-deploy>/api/analyze"
   "keyMetrics": [{ "label": "...", "value": "..." }],
   "signals": ["..."],
   "disclaimer": "Informational analysis only, not financial advice.",
-  "model": "llama-3.3-70b-versatile",
+  "model": "openai/gpt-oss-120b",
   "generatedAt": "<iso-8601>"
 }
 ```
@@ -70,7 +70,7 @@ curl "http://localhost:3000/api/analyze?asset=ETH"
 
 ## How it works
 
-- **Model:** Groq `llama-3.3-70b-versatile`, low temperature, JSON-enforced output.
+- **Model:** Groq `openai/gpt-oss-120b`, low temperature, JSON-enforced output.
 - **Framing:** a DeFi analyst system prompt scoped to *informational* sentiment/risk analysis, which keeps Orion's automated vetting score high and the risk level low.
 - **Stack:** Next.js App Router route handler (`app/api/analyze/route.ts`) + a terminal demo page (`app/page.tsx`). Deploys to Vercel as one project — no database.
 
