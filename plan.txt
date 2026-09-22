@@ -1,0 +1,101 @@
+# Win the Orion Agents Hackathon — Pivot AgentHive to a single submittable agent
+
+## Context
+
+The user asked how to win the hackathon at **orionagents.org/hackathon** with this repo. Two problems surfaced during research:
+
+1. **The repo targets the wrong event.** `README.md` is written for the *Encode Club Kite AI* hackathon (Kite Agent Passport, x402 gasless payments, ReputationRegistry). The Orion Agents hackathon is a different event with a completely different submission shape.
+2. **The headline features are faked.** Per the codebase assessment: Kite x402/EIP-3009 payments are 100% mocked (random hex tx hashes in `backend/src/services/mcp-tool.service.ts`), orchestration is hardcoded (`orchestrator.service.ts`), agents are a hardcoded trio, auth is fake, and no contract deployment is proven. Only Groq (`backend/src/config/groq.service.ts`) and the ethers reputation writes are real.
+
+**What the Orion Agents hackathon actually is** (extracted from the site's JS bundle):
+- **Deadline:** Sept 27, 2026, 23:59 UTC. **Prizes:** $5,000 pool, 7 winners ($1,500 / $1,000 / $500 / 4×$500).
+- **What to build:** *"any kind of AI agent — trading, social media, research, content, community tools. If it is an AI agent and it works, it qualifies."* Orion is a **DeFi AI agent launchpad** with an **AI Concierge** that routes user strategies to vetted agents.
+- **The submission is a single endpoint, not a system:** *"We only accept public, stateless, read-only endpoints. Never submit secrets, private keys, or endpoints requiring payment headers."* You register a `GET`/`POST` **Endpoint URL** (placeholder `https://api.youragent.com/v1/analyze`); Orion builds an adapter to it.
+- **How you're judged (3 signals):** (1) an automated **AI Vetting Score** (0–100) + **Risk Level** computed at submission, (2) **community upvotes** from registered builders in the entries gallery, (3) **partner judges** weigh all of it and pick winners.
+- **How to enter:** register (connect wallet + email + builder name + sign a message, no gas), then submit from that wallet before the deadline with an optional demo link, paying a small **ignition fee** that funds vetting.
+
+**Intended outcome:** Ship ONE excellent AI agent as a single public, stateless, read-only HTTP endpoint that (a) fits Orion's DeFi/Concierge theme, (b) scores high + low-risk on AI vetting, (c) has a crisp live demo + honest narrative, and (d) is registered and submitted before the deadline. User priorities: **rebuild for this codebase**, focus on **demo & narrative**, working window **~48h**.
+
+## Decision: what we build
+
+**Sentinel** — a DeFi Market/Risk Analyst agent. One public endpoint that, given a token/protocol/wallet (and optional question), returns Groq-analyzed sentiment, risk, and key metrics as clean structured JSON. The name fits its job: a sentinel that watches assets and flags risk. Repo/app name: `sentinel-agent`.
+
+**Design language: Terminal / CLI.** Green-on-black, monospace (`Space Mono`, which Orion itself loads). The demo reads like booting a security terminal: a short banner, a prompt where you type an asset, a `> scanning <asset>…` line, then the structured verdict printed as a clean readout (sentiment / risk / metrics / signals). Cheap to build, memorable, and reinforces the "sentinel" concept.
+
+Rationale (all three concepts are buildable today; this one wins fastest):
+- **Fastest:** reuses the real Groq call and the existing analyzer prompt/domain logic — almost no new domain work.
+- **Best theme fit:** Orion is a DeFi launchpad whose Concierge routes DeFi strategies to agents; an analyst slots directly into that.
+- **Highest vetting score / lowest risk:** framed as *informational analysis, not financial advice* → low Risk Level. Stateless + read-only + no secrets in the URL passes Orion's security policy trivially. (Yield/allocation advice scores higher risk; pure research is lower-theme.)
+
+## Repository: fresh, single-purpose repo
+
+Build in a **new, clean repo** (a fresh Next.js app), not inside `agent-hive/`. Reasons: judges can inspect the repo, and this one's git history + README are full of the Kite narrative and the **mocked x402 payment code** (`backend/src/services/mcp-tool.service.ts` returns random-hex fake tx hashes) — a judge who finds that discredits the entry. A clean, single-purpose repo (just the agent + demo) reads and vets better and gives a cleaner Vercel deploy (repo root, not a monorepo subfolder). Keep `agent-hive/` as the source to **copy the real Groq logic from**; nothing is lost. We deliberately **do not** carry over the NestJS orchestrator, Postgres, mocked Kite payments, or ReputationRegistry — none map to Orion's single-endpoint submission.
+
+## Deliverable shape
+
+Deploy target: a **Next.js API route on Vercel** in the new repo. No database, one stable public HTTPS URL, and the demo page ships in the same deployment.
+
+### Step 0 (first, before building features): bootstrap and push the repo
+Remote: `https://github.com/Demilade01/sentinel.git` (new/empty). Do this first so everything after is committed against a live remote:
+1. `create-next-app` (TypeScript, App Router) in a new local dir `sentinel/`.
+2. `git init`, add remote `origin` = the URL above, initial commit, push to `main` (the user explicitly asked to push to this repo first; it's their empty repo, so pushing `main` is fine here).
+3. Confirm the push landed, then build features on top with normal commits.
+
+### 1. The agent endpoint — `frontend/app/api/analyze/route.ts`
+- Support both `GET /api/analyze?asset=<symbol|address|protocol>&question=<optional>` and `POST /api/analyze` with JSON `{ asset, question? }`.
+- Port the real Groq call from `backend/src/config/groq.service.ts` (model `llama-3.3-70b-versatile`, `chat.completions.create`) and the analyst framing from `agent.service.ts` `buildPrompt` (lines 283–312) + the seeded ANALYZER instructions in `orchestrator.service.ts`. Use low temperature and enforce JSON output.
+- **Response schema (stable, documented):**
+  ```json
+  {
+    "asset": "ETH",
+    "summary": "...",
+    "sentiment": "bullish | neutral | bearish",
+    "riskLevel": "low | medium | high",
+    "keyMetrics": [{ "label": "...", "value": "..." }],
+    "signals": ["..."],
+    "disclaimer": "Informational only, not financial advice.",
+    "model": "llama-3.3-70b-versatile",
+    "generatedAt": "<iso>"
+  }
+  ```
+- Validate input (zod is already in the frontend bundle), return clear `400` on bad input, `502` on upstream failure — never a stack trace or secret.
+- Open CORS (`Access-Control-Control-Allow-Origin: *`), fast responses, `GROQ_API_KEY` server-side env var only (never in the submitted URL or the response).
+- **Self-documenting:** `GET /api/analyze` with no params returns the usage/schema/example JSON. This directly helps the automated vetting score and human reviewers.
+
+### 2. Demo page (this is the priority) — `app/page.tsx` as a terminal UI
+- A single terminal-styled page: boot banner (`SENTINEL v1 // DeFi risk & market analyst`), an input prompt, a `> scanning <asset>…` line while it calls `/api/analyze`, then the verdict printed as a monospace readout — sentinel/risk lines colored (green/amber/red), metrics and signals as a list, disclaimer footer.
+- Green-on-black, `Space Mono`. This page is both the landing and the **demo link** on the submission, so a visitor immediately sees the agent work live.
+
+### 3. Narrative & honesty pass
+- Rewrite `README.md` for Orion: what the agent does, the endpoint contract with a copy-paste `curl`, the live demo URL, why it fits the Concierge, and the "informational, not advice" framing. **Remove the Kite x402/Agent Passport/"Production-Ready" claims** — they're mocked and will not survive a judge probing the repo.
+- Prepare a 60–90s pitch: problem → the agent → live call on the demo page → how it plugs into Orion's Concierge.
+
+## Vetting-score checklist (optimize before submitting)
+- Public, stateless, read-only; no auth/payment header required — ✓ by design.
+- Documented contract + working example (the no-param `GET` + README `curl`).
+- Graceful validation and error handling; no secrets in URL or output.
+- Low-risk framing (analysis, not advice) with an explicit disclaimer field.
+- Fast, reliable, always returns valid JSON (fallback if the model returns prose — reuse the `parseGroqResponse` fallback pattern from `agent.service.ts:314`).
+
+## Submission checklist (before Sept 27, 23:59 UTC)
+1. Deploy `frontend/` to Vercel with `GROQ_API_KEY` set; confirm the public `/api/analyze` URL.
+2. On orionagents.org/hackathon: connect wallet, add email + builder name, sign (no gas).
+3. Pay the **ignition fee** from that wallet — **external dependency: the wallet must be funded** on Orion's chain. Flag/confirm with user.
+4. Submit the Vercel `/api/analyze` URL as the Endpoint URL + the `/demo` page as the demo link.
+5. **Community upvotes matter** — external dependency: plan light outreach to registered builders for votes in the entries gallery.
+
+## Critical files (in the new repo)
+- New Next.js app (`create-next-app`), then: `app/api/analyze/route.ts` (the agent), `app/demo/page.tsx` (demo), a fresh honest `README.md`.
+- Copy the real logic from `agent-hive/`: `backend/src/config/groq.service.ts:18` (Groq call), `backend/src/services/agent.service.ts:283` (prompt) + `:314` (JSON-parse fallback), analyzer instructions in `backend/src/services/orchestrator.service.ts`.
+- Deploy config: new repo → Vercel + `GROQ_API_KEY` env var. Push to a new GitHub repo (not `agent-hive`).
+
+## Verification
+- Local: `curl "http://localhost:3000/api/analyze?asset=ETH"` and a `POST` with JSON; confirm schema, `sentiment`/`riskLevel` enums, disclaimer present. Test bad input (`400`) and a forced upstream failure (`502`, no secret leak). Hit the no-param `GET` for the docs payload.
+- Demo page: enter an asset, confirm a live render end-to-end.
+- Deployed: repeat the `curl`s against the Vercel URL; confirm CORS from the browser, latency acceptable, `GROQ_API_KEY` never in responses.
+- Submission dry-run: walk the Orion form fields with the real URL + demo link before paying the ignition fee.
+
+## External dependencies to confirm with the user
+- A wallet funded for the ignition fee on Orion's chain.
+- A Groq API key available for the Vercel deployment.
+- Willingness to do light community outreach for upvotes.
