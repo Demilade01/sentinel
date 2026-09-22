@@ -4,7 +4,7 @@ import { z } from "zod";
 // Sentinel runs at request time (reads query/body); never cached, never prerendered.
 export const dynamic = "force-dynamic";
 
-const MODEL = "llama-3.3-70b-versatile";
+const MODEL = "openai/gpt-oss-120b";
 const DISCLAIMER = "Informational analysis only, not financial advice.";
 
 // ---- CORS: public, read-only, open by design (no auth / payment headers) ----

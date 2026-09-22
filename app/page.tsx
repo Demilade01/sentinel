@@ -182,12 +182,6 @@ export default function Home() {
           />
           <span className="blink text-[var(--term-fg)]">▊</span>
         </form>
-
-        <p className="text-[var(--term-muted)] text-xs">
-          Endpoint:{" "}
-          <span className="text-[var(--term-cyan)]">GET /api/analyze?asset=ETH</span>{" "}
-          · returns structured JSON · not financial advice.
-        </p>
       </div>
     </main>
   );
