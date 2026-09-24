@@ -1,7 +1,7 @@
 # SENTINEL — DeFi Risk & Market Analyst Agent
 
 <p align="center">
-  <img src="public/screenshot.png" alt="SENTINEL terminal UI in compare mode: a green-on-black readout ranking ETH, SOL, and AAVE safest→riskiest with live prices, 0–100 risk scores, sentiment, data sources, and a not-financial-advice disclaimer." width="860">
+  <img src="public/screenshot-1.png" alt="SENTINEL terminal UI in compare mode: a green-on-black readout ranking ETH, SOL, and AAVE safest→riskiest with live prices, 0–100 risk scores, sentiment, data sources, and a not-financial-advice disclaimer." width="860">
 </p>
 
 <p align="center">
