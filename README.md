@@ -14,6 +14,14 @@ Sentinel doesn't just emit an LLM opinion: every response is anchored to real, j
 
 **Extras:** an explainable **risk breakdown** (per-factor scores), a **compare mode** (`?asset=ETH,SOL,AAVE` ranks a basket safest→riskiest), a 30-day **sparkline**, and dynamic per-scan **social share cards** so a shared link previews the actual verdict.
 
+<p align="center">
+  <img src="public/screenshot-comp.png" alt="SENTINEL 'COMPARE THE MARKET' share card: a green-on-black sci-fi HUD with a shield-eye emblem, ranking ETH (RANK #1, risk 10), SOL (RANK #2, elevated), and a third asset safest→riskiest — each portrait card carrying a token logo, a 30-day sparkline, a LOW/MEDIUM/HIGH risk band and 0–100 score, and liquidity/volatility/market-cap factor bars, over data sources CoinGecko · DeFiLlama · GoPlus." width="860">
+</p>
+
+<p align="center">
+  <em>Every scan gets a deterministic share card — a comma-separated basket renders this ranked "compare the market" HUD; a single asset renders its full risk verdict.</em>
+</p>
+
 > **Informational analysis only — not financial advice.** Sentinel never tells anyone to buy, sell, or hold. Every response carries an explicit `disclaimer` field.
 
 ## The endpoint

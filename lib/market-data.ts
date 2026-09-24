@@ -22,6 +22,7 @@ export interface TokenSecurity {
 export interface MarketData {
   resolvedName?: string;
   symbol?: string;
+  iconUrl?: string;
   coingeckoId?: string;
   contractAddress?: string;
   marketCapRank?: number;
@@ -118,7 +119,14 @@ const toNum = (v: unknown) => {
 
 // ---- CoinGecko / DeFiLlama / GoPlus response shapes (partial) ----
 interface CgSearch {
-  coins?: { id: string; name: string; symbol: string; market_cap_rank: number | null }[];
+  coins?: {
+    id: string;
+    name: string;
+    symbol: string;
+    market_cap_rank: number | null;
+    thumb?: string;
+    large?: string;
+  }[];
 }
 type CgPrice = Record<
   string,
@@ -251,6 +259,7 @@ export async function gatherMarketData(asset: string): Promise<MarketData> {
   return {
     resolvedName: coin?.name,
     symbol: coin?.symbol?.toUpperCase(),
+    iconUrl: coin?.large || coin?.thumb,
     coingeckoId: id,
     contractAddress,
     marketCapRank: coin?.market_cap_rank ?? undefined,
