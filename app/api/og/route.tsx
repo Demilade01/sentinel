@@ -61,8 +61,11 @@ function Shell({ children }: { children: ReactElement | ReactElement[] }) {
       }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ display: "flex", fontSize: 40, fontWeight: 700, color: FG, letterSpacing: 4 }}>
-          ◈ SENTINEL
+        <div style={{ display: "flex", alignItems: "center" }}>
+          <div style={{ display: "flex", width: 28, height: 28, background: FG, borderRadius: 6, marginRight: 16 }} />
+          <div style={{ display: "flex", fontSize: 40, fontWeight: 700, color: FG, letterSpacing: 4 }}>
+            SENTINEL
+          </div>
         </div>
         <div style={{ display: "flex", fontSize: 22, color: MUTED, letterSpacing: 2 }}>
           DeFi RISK &amp; MARKET ANALYST
@@ -176,7 +179,7 @@ function DefaultCard() {
         one public, stateless, read-only endpoint.
       </div>
       <div style={{ display: "flex", marginTop: 40 }}>
-        {["ETH", "SOL", "AAVE", "uniswap", "0x…"].map((e) => (
+        {["ETH", "SOL", "AAVE", "uniswap", "0x..."].map((e) => (
           <div
             key={e}
             style={{
