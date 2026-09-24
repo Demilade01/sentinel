@@ -1,5 +1,13 @@
 # SENTINEL — DeFi Risk & Market Analyst Agent
 
+<p align="center">
+  <img src="public/screenshot.png" alt="SENTINEL terminal UI in compare mode: a green-on-black readout ranking ETH, SOL, and AAVE safest→riskiest with live prices, 0–100 risk scores, sentiment, data sources, and a not-financial-advice disclaimer." width="860">
+</p>
+
+<p align="center">
+  <em>Type an asset — or a comma-separated basket — and watch the agent resolve, scan, and print a data-grounded verdict live.</em>
+</p>
+
 A single public, stateless, read-only AI agent for the [Orion Agents](https://orionagents.org/hackathon) launchpad. Give it a token, protocol, or wallet and it fetches **live market data** (CoinGecko + DeFiLlama + GoPlus), reasons over it with Groq, and returns a **data-grounded** verdict — sentiment, an explainable 0–100 risk score, key metrics, and signals — as clean, structured JSON.
 
 Sentinel doesn't just emit an LLM opinion: every response is anchored to real, just-fetched numbers (price, market cap, 24h/7d/30d change, protocol TVL, token-contract security) and reports which sources it used and how confident it is. The **risk score is computed deterministically in code** (not by the LLM) from named, weighted factors — so it's reproducible and auditable — then handed to the model as ground truth. It's designed to plug straight into Orion's **AI Concierge**: when a user describes a DeFi strategy, the Concierge can call Sentinel to get a fast, sober, evidence-backed read on any asset involved — no wallet, no auth, no payment headers.

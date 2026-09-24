@@ -3,22 +3,25 @@ import type { ReactElement } from "react";
 import { gatherMarketData, fmtUsd, fmtPct, type MarketData } from "@/lib/market-data";
 import { computeRiskModel, type RiskModel } from "@/lib/risk";
 
-// Dynamic per-asset Open Graph card. Deterministic (no LLM): renders the live
-// price, computed risk score, and top risk factors so shared /?asset=X links
-// preview a real verdict. Deep-linked from the page's generateMetadata.
+// Dynamic per-asset Open Graph card, styled as a casino "poker card": the
+// deterministic risk score is the card's rank, the risk band is its suit/colour,
+// and the risk meter is the odds bar. Deterministic (no LLM) so a shared
+// /?asset=X link previews a real verdict. Deep-linked from generateMetadata.
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const SIZE = { width: 1200, height: 630 };
 const BG = "#050806";
+const FELT = "#0c2417";
+const CARD = "#0a1d12";
 const FG = "#33ff66";
 const AMBER = "#ffb642";
 const RED = "#ff5c5c";
 const CYAN = "#5cf2ff";
 const MUTED = "#5f7a67";
-const PANEL = "#0c1a11";
 const DIM = "#16351f";
 const BRIGHT = "#eafff0";
+const GOLD = "#d4af37";
 
 function levelColor(level: "low" | "medium" | "high"): string {
   return level === "low" ? FG : level === "high" ? RED : AMBER;
@@ -27,18 +30,108 @@ function scoreLevel(score: number): "low" | "medium" | "high" {
   return score <= 33 ? "low" : score <= 66 ? "medium" : "high";
 }
 
-function RiskBar({ score, color }: { score: number; color: string }) {
-  const segs = 24;
+const CHIP_LABEL: Record<string, string> = {
+  liquidity: "LIQ",
+  volatility: "VOL",
+  size: "SIZE",
+  contract: "SAFETY",
+  concentration: "CONC",
+};
+
+// A drawn suit "pip" — a rotated square (diamond). No unicode glyph, so it never
+// triggers a dynamic-font fetch (the earlier ◈ bug).
+function Pip({ size, color }: { size: number; color: string }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        width: size,
+        height: size,
+        background: color,
+        borderRadius: 2,
+        transform: "rotate(45deg)",
+      }}
+    />
+  );
+}
+
+// Corner rank + pip like a playing-card index; bottom-right is flipped 180°.
+function CornerBadge({ score, color, flip }: { score?: number; color: string; flip?: boolean }) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        ...(flip ? { bottom: 44, right: 50 } : { top: 44, left: 50 }),
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        ...(flip ? { transform: "rotate(180deg)" } : {}),
+      }}
+    >
+      {score != null && (
+        <div style={{ display: "flex", fontSize: 44, fontWeight: 700, color, lineHeight: 1 }}>
+          {score}
+        </div>
+      )}
+      <div style={{ display: "flex", marginTop: score != null ? 8 : 0 }}>
+        <Pip size={score != null ? 20 : 26} color={color} />
+      </div>
+    </div>
+  );
+}
+
+// Poker-chip: nested circles, ring tinted by factor severity.
+function Chip({ keyName, label, score }: { keyName: string; label: string; score: number }) {
+  const c = levelColor(scoreLevel(score));
+  const code = CHIP_LABEL[keyName] ?? label.slice(0, 4).toUpperCase();
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginRight: 22 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 74,
+          height: 74,
+          borderRadius: 999,
+          background: c,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 58,
+            height: 58,
+            borderRadius: 999,
+            background: CARD,
+          }}
+        >
+          <div style={{ display: "flex", fontSize: 28, fontWeight: 700, color: c }}>{score}</div>
+        </div>
+      </div>
+      <div style={{ display: "flex", fontSize: 15, color: MUTED, marginTop: 8, letterSpacing: 1 }}>
+        {code}
+      </div>
+    </div>
+  );
+}
+
+// The "odds" meter — a segmented felt bar.
+function OddsBar({ score, color }: { score: number; color: string }) {
+  const segs = 20;
   const filled = Math.max(0, Math.min(segs, Math.round((score / 100) * segs)));
   return (
-    <div style={{ display: "flex", gap: 5 }}>
+    <div style={{ display: "flex", gap: 4 }}>
       {Array.from({ length: segs }).map((_, i) => (
         <div
           key={i}
           style={{
-            width: 34,
-            height: 24,
-            borderRadius: 3,
+            display: "flex",
+            width: 18,
+            height: 16,
+            borderRadius: 2,
             background: i < filled ? color : "#0f2416",
           }}
         />
@@ -46,199 +139,334 @@ function RiskBar({ score, color }: { score: number; color: string }) {
     </div>
   );
 }
-function Shell({ children }: { children: ReactElement | ReactElement[] }) {
+
+// Drawn 30d sparkline (bars, not glyphs).
+function MiniSpark({ values, up }: { values: number[]; up: boolean }) {
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const color = up ? FG : RED;
+  return (
+    <div style={{ display: "flex", alignItems: "flex-end", height: 40 }}>
+      {values.map((v, i) => (
+        <div
+          key={i}
+          style={{
+            display: "flex",
+            width: 6,
+            height: 6 + ((v - min) / range) * 34,
+            marginRight: 2,
+            borderRadius: 1,
+            background: color,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+// Felt table + gold-framed card shared by every card. Renders the header
+// wordmark and two corner indices (rank+pip when scored, else a gold pip).
+function CardFrame({
+  children,
+  corner,
+}: {
+  children: ReactElement | ReactElement[];
+  corner?: { score: number; color: string };
+}) {
+  const badgeColor = corner ? corner.color : GOLD;
   return (
     <div
       style={{
         width: "100%",
         height: "100%",
         display: "flex",
-        flexDirection: "column",
-        background: BG,
-        color: FG,
-        padding: 64,
+        padding: 28,
+        background: `linear-gradient(135deg, ${BG} 0%, ${FELT} 52%, ${BG} 100%)`,
         fontFamily: "sans-serif",
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ display: "flex", alignItems: "center" }}>
-          <div style={{ display: "flex", width: 28, height: 28, background: FG, borderRadius: 6, marginRight: 16 }} />
-          <div style={{ display: "flex", fontSize: 40, fontWeight: 700, color: FG, letterSpacing: 4 }}>
-            SENTINEL
+      <div
+        style={{
+          position: "relative",
+          display: "flex",
+          flexDirection: "column",
+          flexGrow: 1,
+          background: CARD,
+          borderRadius: 28,
+          border: `2px solid ${GOLD}`,
+          boxShadow: "inset 0 0 90px rgba(0,0,0,0.55)",
+          padding: 44,
+        }}
+      >
+        <CornerBadge score={corner?.score} color={badgeColor} />
+        <CornerBadge score={corner?.score} color={badgeColor} flip />
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+          <div style={{ display: "flex", alignItems: "center" }}>
+            <div
+              style={{
+                display: "flex",
+                width: 24,
+                height: 24,
+                background: FG,
+                borderRadius: 5,
+                marginRight: 16,
+                transform: "rotate(45deg)",
+              }}
+            />
+            <div
+              style={{ display: "flex", fontSize: 34, fontWeight: 700, color: FG, letterSpacing: 5 }}
+            >
+              SENTINEL
+            </div>
+          </div>
+          <div
+            style={{ display: "flex", fontSize: 17, color: MUTED, letterSpacing: 3, marginTop: 8 }}
+          >
+            DeFi RISK &amp; MARKET ANALYST
           </div>
         </div>
-        <div style={{ display: "flex", fontSize: 22, color: MUTED, letterSpacing: 2 }}>
-          DeFi RISK &amp; MARKET ANALYST
-        </div>
+        {children}
       </div>
-      {children}
     </div>
   );
 }
+
 function VerdictCard({ raw, market, risk }: { raw: string; market: MarketData; risk: RiskModel }) {
-  const name = market.resolvedName || raw.toUpperCase();
-  const sym = market.symbol ? ` (${market.symbol})` : "";
+  const symbol = market.symbol || raw.toUpperCase();
+  const name = market.resolvedName || "";
   const price = fmtUsd(market.priceUsd);
   const chg = market.change24hPct;
   const chgStr = fmtPct(chg);
   const col = levelColor(risk.riskLevel);
   const sources = market.dataSources.length ? market.dataSources.join("  ·  ") : "model knowledge only";
   const top = [...risk.factors].sort((a, b) => b.score - a.score).slice(0, 3);
+  const spark = market.spark && market.spark.length > 1 ? market.spark : null;
+  const sparkUp = spark ? spark[spark.length - 1] >= spark[0] : true;
 
   return (
-    <Shell>
-      <div style={{ display: "flex", marginTop: 44, fontSize: 68, fontWeight: 700, color: BRIGHT }}>
-        {name}
-        {sym}
-      </div>
-
-      <div style={{ display: "flex", alignItems: "flex-end", marginTop: 14 }}>
-        <div style={{ display: "flex", fontSize: 56, color: BRIGHT }}>{price ?? "price n/a"}</div>
-        {chgStr ? (
-          <div
-            style={{
-              display: "flex",
-              fontSize: 34,
-              color: chg != null && chg >= 0 ? FG : RED,
-              paddingBottom: 6,
-              marginLeft: 24,
-            }}
-          >
-            {chgStr} 24h
+    <CardFrame corner={{ score: risk.riskScore, color: col }}>
+      <div style={{ display: "flex", flexGrow: 1, marginTop: 20, paddingLeft: 34, paddingRight: 16 }}>
+        <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, justifyContent: "center" }}>
+          <div style={{ display: "flex", fontSize: 124, fontWeight: 700, color: BRIGHT, lineHeight: 1 }}>
+            {symbol}
           </div>
-        ) : (
-          <div style={{ display: "flex" }} />
-        )}
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", marginTop: 36 }}>
-        <div style={{ display: "flex", alignItems: "center" }}>
-          <div style={{ display: "flex", fontSize: 26, color: MUTED, letterSpacing: 3, marginRight: 20 }}>RISK</div>
-          <div style={{ display: "flex", fontSize: 76, fontWeight: 700, color: col }}>{risk.riskScore}</div>
-          <div style={{ display: "flex", fontSize: 30, color: MUTED, paddingBottom: 8, marginLeft: 6 }}>/100</div>
-          <div
-            style={{
-              display: "flex",
-              fontSize: 26,
-              color: col,
-              border: `2px solid ${col}`,
-              borderRadius: 6,
-              padding: "6px 18px",
-              marginLeft: 22,
-              letterSpacing: 2,
-            }}
-          >
-            {risk.riskLevel.toUpperCase()}
+          {name ? (
+            <div style={{ display: "flex", fontSize: 30, color: MUTED, marginTop: 8 }}>{name}</div>
+          ) : (
+            <div style={{ display: "flex" }} />
+          )}
+          <div style={{ display: "flex", alignItems: "flex-end", marginTop: 24 }}>
+            <div style={{ display: "flex", fontSize: 46, color: BRIGHT }}>{price ?? "price n/a"}</div>
+            {chgStr ? (
+              <div
+                style={{
+                  display: "flex",
+                  fontSize: 27,
+                  color: chg != null && chg >= 0 ? FG : RED,
+                  paddingBottom: 6,
+                  marginLeft: 18,
+                }}
+              >
+                {chgStr} 24h
+              </div>
+            ) : (
+              <div style={{ display: "flex" }} />
+            )}
           </div>
+          {spark ? (
+            <div style={{ display: "flex", marginTop: 22 }}>
+              <MiniSpark values={spark} up={sparkUp} />
+            </div>
+          ) : (
+            <div style={{ display: "flex" }} />
+          )}
         </div>
-        <div style={{ display: "flex", marginTop: 20 }}>
-          <RiskBar score={risk.riskScore} color={col} />
-        </div>
-      </div>
-
-      <div style={{ display: "flex", marginTop: 34 }}>
-        {top.map((f) => {
-          const fc = levelColor(scoreLevel(f.score));
-          return (
+        <div style={{ display: "flex", flexDirection: "column", width: 460, justifyContent: "center" }}>
+          <div style={{ display: "flex", fontSize: 24, color: GOLD, letterSpacing: 5 }}>THE ODDS</div>
+          <div style={{ display: "flex", alignItems: "center", marginTop: 14 }}>
+            <div style={{ display: "flex", fontSize: 28, color: MUTED, marginRight: 14, letterSpacing: 2 }}>
+              RISK
+            </div>
+            <div style={{ display: "flex", fontSize: 66, fontWeight: 700, color: col }}>
+              {risk.riskScore}
+            </div>
+            <div style={{ display: "flex", fontSize: 26, color: MUTED, paddingBottom: 8, marginLeft: 4 }}>
+              /100
+            </div>
             <div
-              key={f.key}
               style={{
                 display: "flex",
-                flexDirection: "column",
-                background: PANEL,
-                border: `1px solid ${DIM}`,
-                borderRadius: 10,
-                padding: "16px 22px",
-                marginRight: 16,
+                fontSize: 22,
+                color: col,
+                border: `2px solid ${col}`,
+                borderRadius: 6,
+                padding: "5px 14px",
+                marginLeft: 16,
+                letterSpacing: 2,
               }}
             >
-              <div style={{ display: "flex", fontSize: 20, color: MUTED }}>{f.label}</div>
-              <div style={{ display: "flex", fontSize: 34, color: fc, marginTop: 4 }}>{f.score}/100</div>
+              {risk.riskLevel.toUpperCase()}
             </div>
-          );
-        })}
+          </div>
+          <div style={{ display: "flex", marginTop: 16 }}>
+            <OddsBar score={risk.riskScore} color={col} />
+          </div>
+          {top.length > 0 ? (
+            <div style={{ display: "flex", marginTop: 28 }}>
+              {top.map((f) => (
+                <Chip key={f.key} keyName={f.key} label={f.label} score={f.score} />
+              ))}
+            </div>
+          ) : (
+            <div style={{ display: "flex" }} />
+          )}
+        </div>
       </div>
-
-      <div style={{ display: "flex", flexDirection: "column", marginTop: "auto" }}>
-        <div style={{ display: "flex", fontSize: 20, color: CYAN }}>sources: {sources}</div>
-        <div style={{ display: "flex", fontSize: 18, color: MUTED, marginTop: 8 }}>
+      <div style={{ display: "flex", flexDirection: "column", marginTop: 6 }}>
+        <div style={{ display: "flex", fontSize: 18, color: CYAN }}>sources: {sources}</div>
+        <div style={{ display: "flex", fontSize: 15, color: MUTED, marginTop: 6 }}>
           Informational analysis only, not financial advice.
         </div>
       </div>
-    </Shell>
+    </CardFrame>
   );
 }
+
 function DefaultCard() {
+  const chips = ["ETH", "SOL", "AAVE", "uniswap", "0x..."];
   return (
-    <Shell>
-      <div style={{ display: "flex", marginTop: 60, fontSize: 60, fontWeight: 700, color: BRIGHT }}>
-        DeFi risk &amp; market analyst
+    <CardFrame>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          flexGrow: 1,
+          justifyContent: "center",
+          alignItems: "center",
+        }}
+      >
+        <div style={{ display: "flex", fontSize: 60, fontWeight: 700, color: BRIGHT }}>
+          DeFi risk &amp; market analyst
+        </div>
+        <div
+          style={{
+            display: "flex",
+            fontSize: 26,
+            color: MUTED,
+            marginTop: 18,
+            maxWidth: 900,
+            textAlign: "center",
+          }}
+        >
+          Deal any token, protocol, or wallet: a data-grounded risk score, key metrics, and signals
+          from one public, stateless, read-only endpoint.
+        </div>
+        <div style={{ display: "flex", marginTop: 34 }}>
+          {chips.map((e) => (
+            <div
+              key={e}
+              style={{
+                display: "flex",
+                fontSize: 22,
+                color: FG,
+                border: `1px solid ${DIM}`,
+                borderRadius: 999,
+                padding: "8px 18px",
+                marginRight: 12,
+              }}
+            >
+              {e}
+            </div>
+          ))}
+        </div>
       </div>
-      <div style={{ display: "flex", marginTop: 20, fontSize: 30, color: MUTED, maxWidth: 960 }}>
-        Scan any token, protocol, or wallet for a data-grounded risk score, key metrics, and signals — from
-        one public, stateless, read-only endpoint.
-      </div>
-      <div style={{ display: "flex", marginTop: 40 }}>
-        {["ETH", "SOL", "AAVE", "uniswap", "0x..."].map((e) => (
-          <div
-            key={e}
-            style={{
-              display: "flex",
-              fontSize: 24,
-              color: FG,
-              border: `1px solid ${DIM}`,
-              borderRadius: 6,
-              padding: "8px 18px",
-              marginRight: 14,
-            }}
-          >
-            {e}
-          </div>
-        ))}
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", marginTop: "auto" }}>
-        <div style={{ display: "flex", fontSize: 20, color: CYAN }}>CoinGecko · DeFiLlama · GoPlus</div>
-        <div style={{ display: "flex", fontSize: 18, color: MUTED, marginTop: 8 }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginTop: 6 }}>
+        <div style={{ display: "flex", fontSize: 19, color: CYAN }}>CoinGecko · DeFiLlama · GoPlus</div>
+        <div style={{ display: "flex", fontSize: 15, color: MUTED, marginTop: 6 }}>
           Informational analysis only, not financial advice.
         </div>
       </div>
-    </Shell>
+    </CardFrame>
   );
 }
 
 function CompareCard({ assets }: { assets: string[] }) {
+  const n = assets.length;
+  const mid = (n - 1) / 2;
   return (
-    <Shell>
-      <div style={{ display: "flex", marginTop: 50, fontSize: 30, color: AMBER, letterSpacing: 3 }}>
-        COMPARE MODE
+    <CardFrame>
+      <div
+        style={{
+          display: "flex",
+          fontSize: 26,
+          color: GOLD,
+          letterSpacing: 5,
+          marginTop: 14,
+          alignSelf: "center",
+        }}
+      >
+        COMPARE · THE TABLE
       </div>
-      <div style={{ display: "flex", flexWrap: "wrap", marginTop: 22 }}>
-        {assets.map((a) => (
-          <div
-            key={a}
-            style={{
-              display: "flex",
-              fontSize: 46,
-              fontWeight: 700,
-              color: BRIGHT,
-              marginRight: 28,
-              marginBottom: 12,
-            }}
-          >
-            {a.toUpperCase()}
-          </div>
-        ))}
+      <div style={{ display: "flex", flexGrow: 1, alignItems: "center", justifyContent: "center" }}>
+        <div style={{ display: "flex", alignItems: "center" }}>
+          {assets.map((a, i) => {
+            const rot = Math.round((i - mid) * 7);
+            const sym = a.length > 6 ? a.slice(0, 5).toUpperCase() : a.toUpperCase();
+            return (
+              <div
+                key={a}
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  width: 148,
+                  height: 208,
+                  marginLeft: i === 0 ? 0 : -12,
+                  marginRight: -12,
+                  padding: 16,
+                  background: CARD,
+                  border: `2px solid ${GOLD}`,
+                  borderRadius: 14,
+                  boxShadow: "0 12px 30px rgba(0,0,0,0.5)",
+                  transform: `rotate(${rot}deg)`,
+                }}
+              >
+                <div style={{ display: "flex", alignSelf: "flex-start" }}>
+                  <Pip size={16} color={GOLD} />
+                </div>
+                <div style={{ display: "flex", fontSize: 34, fontWeight: 700, color: BRIGHT }}>
+                  {sym}
+                </div>
+                <div style={{ display: "flex", alignSelf: "flex-end", transform: "rotate(180deg)" }}>
+                  <Pip size={16} color={GOLD} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
-      <div style={{ display: "flex", marginTop: 24, fontSize: 28, color: MUTED, maxWidth: 980 }}>
+      <div
+        style={{
+          display: "flex",
+          fontSize: 24,
+          color: MUTED,
+          alignSelf: "center",
+          textAlign: "center",
+          maxWidth: 920,
+          marginBottom: 6,
+        }}
+      >
         Ranked safest → riskiest by a deterministic multi-factor risk model over live market data.
       </div>
-      <div style={{ display: "flex", flexDirection: "column", marginTop: "auto" }}>
-        <div style={{ display: "flex", fontSize: 20, color: CYAN }}>CoinGecko · DeFiLlama · GoPlus</div>
-        <div style={{ display: "flex", fontSize: 18, color: MUTED, marginTop: 8 }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+        <div style={{ display: "flex", fontSize: 19, color: CYAN }}>CoinGecko · DeFiLlama · GoPlus</div>
+        <div style={{ display: "flex", fontSize: 15, color: MUTED, marginTop: 6 }}>
           Informational analysis only, not financial advice.
         </div>
       </div>
-    </Shell>
+    </CardFrame>
   );
 }
 
