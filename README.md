@@ -1,8 +1,10 @@
 # SENTINEL — DeFi Risk & Market Analyst Agent
 
-A single public, stateless, read-only AI agent for the [Orion Agents](https://orionagents.org/hackathon) launchpad. Give it a token, protocol, or wallet and it fetches **live market data** (CoinGecko + DeFiLlama), reasons over it with Groq, and returns a **data-grounded** verdict — sentiment, a 0–100 risk score, key metrics, and signals — as clean, structured JSON.
+A single public, stateless, read-only AI agent for the [Orion Agents](https://orionagents.org/hackathon) launchpad. Give it a token, protocol, or wallet and it fetches **live market data** (CoinGecko + DeFiLlama + GoPlus), reasons over it with Groq, and returns a **data-grounded** verdict — sentiment, an explainable 0–100 risk score, key metrics, and signals — as clean, structured JSON.
 
-Sentinel doesn't just emit an LLM opinion: every response is anchored to real, just-fetched numbers (price, market cap, 24h volume/change, protocol TVL) and reports which sources it used and how confident it is. It's designed to plug straight into Orion's **AI Concierge**: when a user describes a DeFi strategy, the Concierge can call Sentinel to get a fast, sober, evidence-backed read on any asset involved — no wallet, no auth, no payment headers.
+Sentinel doesn't just emit an LLM opinion: every response is anchored to real, just-fetched numbers (price, market cap, 24h/7d/30d change, protocol TVL, token-contract security) and reports which sources it used and how confident it is. The **risk score is computed deterministically in code** (not by the LLM) from named, weighted factors — so it's reproducible and auditable — then handed to the model as ground truth. It's designed to plug straight into Orion's **AI Concierge**: when a user describes a DeFi strategy, the Concierge can call Sentinel to get a fast, sober, evidence-backed read on any asset involved — no wallet, no auth, no payment headers.
+
+**Extras:** an explainable **risk breakdown** (per-factor scores), a **compare mode** (`?asset=ETH,SOL,AAVE` ranks a basket safest→riskiest), a 30-day **sparkline**, and dynamic per-scan **social share cards** so a shared link previews the actual verdict.
 
 > **Informational analysis only — not financial advice.** Sentinel never tells anyone to buy, sell, or hold. Every response carries an explicit `disclaimer` field.
 
@@ -16,6 +18,9 @@ curl "https://<your-deploy>/api/analyze?asset=ETH"
 
 # With an optional question
 curl "https://<your-deploy>/api/analyze?asset=aave&question=how%20concentrated%20is%20liquidity"
+
+# Compare mode — rank up to 5 comma-separated assets safest→riskiest
+curl "https://<your-deploy>/api/analyze?asset=ETH,SOL,AAVE"
 
 # POST with JSON
 curl -X POST "https://<your-deploy>/api/analyze" \
@@ -31,11 +36,14 @@ curl "https://<your-deploy>/api/analyze"
 ```json
 {
   "asset": "ETH",
-  "resolved": { "name": "Ethereum", "symbol": "ETH" },
+  "resolved": { "name": "Ethereum", "symbol": "ETH", "contractAddress": "0x…" },
   "summary": "...",
   "sentiment": "bullish | neutral | bearish",
   "riskLevel": "low | medium | high",
   "riskScore": 22,
+  "riskFactors": [
+    { "key": "liquidity", "label": "Liquidity", "score": 15, "weight": 0.25, "note": "24h turnover 5.88% of market cap" }
+  ],
   "confidence": "low | medium | high",
   "keyMetrics": [{ "label": "Price (USD)", "value": "$2735.61" }],
   "signals": ["..."],
@@ -44,8 +52,12 @@ curl "https://<your-deploy>/api/analyze"
     "marketCapUsd": 333937192224,
     "vol24hUsd": 19635885317,
     "change24hPct": 0.0025,
+    "change7dPct": 1.4,
+    "change30dPct": -6.2,
+    "volatility30dPct": 2.31,
     "tvlUsd": 19648727372,
-    "marketCapRank": 2
+    "marketCapRank": 2,
+    "spark": [2610.1, 2634.7, 2701.9]
   },
   "dataSources": ["CoinGecko", "DeFiLlama"],
   "disclaimer": "Informational analysis only, not financial advice.",
@@ -54,7 +66,9 @@ curl "https://<your-deploy>/api/analyze"
 }
 ```
 
-`riskLevel` is derived from `riskScore` (≤33 low, ≤66 medium, else high) so they never disagree. `confidence` reflects how much live data was resolved. `data` holds the raw numbers; `dataSources` lists which public APIs answered.
+`riskLevel` is derived from `riskScore` (≤33 low, ≤66 medium, else high) so they never disagree. `riskFactors` explains that score — each named factor (Liquidity, Volatility, Size/maturity, Contract safety, Concentration) is scored 0–100 and weighted, then renormalized over whatever data resolved. `confidence` reflects how much live data was resolved. `data` holds the raw numbers (including a 30-day `spark` series); `dataSources` lists which public APIs answered.
+
+**Compare mode** (comma-separated `asset`) returns a different shape: `{ mode: "compare", assets, ranked, safest, results }`, where `ranked` sorts the basket safest→riskiest by `riskScore` and `results` holds each asset's full analysis.
 
 ### Contract & behavior
 
@@ -68,7 +82,7 @@ curl "https://<your-deploy>/api/analyze"
 
 ## Live demo
 
-The landing page (`/`) is a terminal UI: type an asset (or tap an example chip), watch `> resolving & scanning <asset>…`, and read the verdict printed as a monospace readout — live price/24h change, a color-coded sentiment and risk meter, the summary typed out, metrics, signals, and the data sources used. Scans are deep-linkable (`/?asset=ETH` auto-runs) and there's a copy-share-link button. It calls the same public `/api/analyze` endpoint you'd register with Orion, so a visitor sees the agent work live.
+The landing page (`/`) is a terminal UI: type an asset (or tap an example chip), watch `> resolving & scanning <asset>…`, and read the verdict printed as a monospace readout — live price/24h change, a 30-day sparkline, a color-coded sentiment and risk meter, the summary typed out, an explainable **risk breakdown** (per-factor bars), metrics, signals, and the data sources used. Type a comma-separated list (or tap the `ETH,SOL,AAVE` chip) to see **compare mode** rank a basket safest→riskiest. Scans are deep-linkable (`/?asset=ETH` auto-runs), each has a **share card** (dynamic Open Graph image) so shared links preview the verdict, and there's a copy-share-link button. It calls the same public `/api/analyze` endpoint you'd register with Orion, so a visitor sees the agent work live.
 
 ## Run locally
 
@@ -86,10 +100,12 @@ curl "http://localhost:3000/api/analyze?asset=ETH"
 
 ## How it works
 
-- **Data layer** (`lib/market-data.ts`): resolves the asset (EVM address → DeFiLlama coins; otherwise CoinGecko search), then pulls price/market-cap/volume/24h-change from CoinGecko and protocol TVL from DeFiLlama. All keyless public APIs, each call timeout-guarded with one retry and a 60s in-memory cache.
-- **Model:** Groq `openai/gpt-oss-120b`, low temperature, JSON-enforced output. It's fed the live data as ground truth and returns summary/sentiment/riskScore/signals; the server derives `riskLevel` and `confidence`.
+- **Data layer** (`lib/market-data.ts`): resolves the asset (EVM address → DeFiLlama coins + GoPlus; otherwise CoinGecko search), then pulls price/market-cap/volume/24h-change plus a 30-day chart (from which it derives 7d/30d change, a daily-return volatility proxy, and a sparkline) from CoinGecko, protocol TVL from DeFiLlama, and token-contract security (honeypot, taxes, mint/ownership flags, holder concentration) from GoPlus. All keyless public APIs, each call timeout-guarded with one retry and a 60s in-memory cache.
+- **Risk model** (`lib/risk.ts`): a deterministic, weighted multi-factor score computed in code — Liquidity, Volatility, Size/maturity, Contract safety, Concentration — renormalized over whatever data resolved. Reproducible and auditable, and fed to the model as ground truth so the LLM never invents the number.
+- **Model:** Groq `openai/gpt-oss-120b`, low temperature, JSON-enforced output. It's fed the live data **and** the pre-computed risk model as ground truth and returns summary/sentiment/signals; the server owns `riskScore`, `riskLevel`, and `confidence`.
 - **Framing:** an *informational* DeFi analyst prompt (never advice), which keeps Orion's automated vetting score high and the risk profile clean.
-- **Stack:** Next.js App Router route handler (`app/api/analyze/route.ts`) + a terminal demo page (`app/page.tsx`). Deploys to Vercel as one project — no database.
+- **Share cards:** `app/api/og/route.tsx` renders a per-scan Open Graph image (`next/og`) from the same deterministic data, wired up via the page's `generateMetadata`.
+- **Stack:** Next.js App Router route handler (`app/api/analyze/route.ts`) + a terminal demo page (`app/page.tsx` → `app/terminal.tsx`). Deploys to Vercel as one project — no database.
 
 ## Deploy
 

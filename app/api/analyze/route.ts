@@ -1,18 +1,15 @@
 import Groq from "groq-sdk";
 import { z } from "zod";
-import {
-  gatherMarketData,
-  marketDataContext,
-  type MarketData,
-} from "@/lib/market-data";
+import { gatherMarketData, marketDataContext } from "@/lib/market-data";
+import { computeRiskModel, type RiskFactor } from "@/lib/risk";
 
 // Sentinel runs at request time (reads query/body + live data); never cached.
 export const dynamic = "force-dynamic";
 
 const MODEL = "openai/gpt-oss-120b";
 const DISCLAIMER = "Informational analysis only, not financial advice.";
+const MAX_COMPARE = 5;
 
-// ---- CORS: public, read-only, open by design (no auth / payment headers) ----
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -33,25 +30,23 @@ export function OPTIONS() {
 
 // ---------------------------- Input validation ----------------------------
 const InputSchema = z.object({
-  asset: z.string().trim().min(1, "asset is required").max(120, "asset is too long"),
+  asset: z.string().trim().min(1, "asset is required").max(400, "asset is too long"),
   question: z.string().trim().max(500, "question is too long").optional(),
 });
 
-// ---------------------------- Stable output shape --------------------------
 const SENTIMENTS = ["bullish", "neutral", "bearish"] as const;
-const RISK_LEVELS = ["low", "medium", "high"] as const;
 const CONFIDENCE = ["low", "medium", "high"] as const;
 type Sentiment = (typeof SENTIMENTS)[number];
-type RiskLevel = (typeof RISK_LEVELS)[number];
 type Confidence = (typeof CONFIDENCE)[number];
 
 interface AnalyzeResult {
   asset: string;
-  resolved: { name?: string; symbol?: string };
+  resolved: { name?: string; symbol?: string; contractAddress?: string };
   summary: string;
   sentiment: Sentiment;
-  riskLevel: RiskLevel;
+  riskLevel: "low" | "medium" | "high";
   riskScore: number;
+  riskFactors: RiskFactor[];
   confidence: Confidence;
   keyMetrics: { label: string; value: string }[];
   signals: string[];
@@ -60,8 +55,12 @@ interface AnalyzeResult {
     marketCapUsd?: number;
     vol24hUsd?: number;
     change24hPct?: number;
+    change7dPct?: number;
+    change30dPct?: number;
+    volatility30dPct?: number;
     tvlUsd?: number;
     marketCapRank?: number;
+    spark?: number[];
   };
   dataSources: string[];
   disclaimer: string;
@@ -72,66 +71,74 @@ interface AnalyzeResult {
 const USAGE = {
   agent: "sentinel",
   description:
-    "DeFi risk & market analyst agent. Given a token, protocol, or wallet, fetches live market data (CoinGecko + DeFiLlama) and returns a data-grounded sentiment, risk score, key metrics, and signals as structured JSON.",
+    "DeFi risk & market analyst agent. Fetches live market data (CoinGecko + DeFiLlama + GoPlus), computes an explainable multi-factor risk model, and returns a data-grounded verdict as structured JSON.",
   endpoints: {
     "GET /api/analyze": "Returns this usage document when called with no params.",
-    "GET /api/analyze?asset=<symbol|address|protocol>&question=<optional>":
-      "Analyze an asset.",
+    "GET /api/analyze?asset=<symbol|address|protocol>&question=<optional>": "Analyze one asset.",
+    "GET /api/analyze?asset=ETH,SOL,AAVE":
+      "Compare mode — analyze up to 5 comma-separated assets and rank them by risk.",
     "POST /api/analyze": 'JSON body: { "asset": "ETH", "question": "optional" }',
   },
   responseSchema: {
     asset: "string",
-    resolved: "{ name?: string, symbol?: string }",
+    resolved: "{ name?, symbol?, contractAddress? }",
     summary: "string",
     sentiment: "bullish | neutral | bearish",
     riskLevel: "low | medium | high",
-    riskScore: "number 0-100",
+    riskScore: "number 0-100 (computed, reproducible)",
+    riskFactors: "{ key, label, score, weight, note }[]",
     confidence: "low | medium | high",
-    keyMetrics: "{ label: string, value: string }[]",
+    keyMetrics: "{ label, value }[]",
     signals: "string[]",
-    data: "{ priceUsd?, marketCapUsd?, vol24hUsd?, change24hPct?, tvlUsd?, marketCapRank? }",
+    data: "{ priceUsd?, marketCapUsd?, vol24hUsd?, change24hPct?, change7dPct?, change30dPct?, volatility30dPct?, tvlUsd?, marketCapRank?, spark? }",
     dataSources: "string[]",
     disclaimer: "string",
     model: "string",
     generatedAt: "ISO-8601 string",
   },
-  dataSources: ["CoinGecko (public API)", "DeFiLlama (public API)"],
-  example: {
-    request: "GET /api/analyze?asset=ETH",
-    curl: 'curl "https://<your-deploy>/api/analyze?asset=ETH"',
-  },
+  dataSources: [
+    "CoinGecko (price / market cap / volume / 30d history / resolution)",
+    "DeFiLlama (protocol TVL)",
+    "GoPlus (token contract security)",
+  ],
+  compare: { example: "GET /api/analyze?asset=ETH,SOL,AAVE", note: "returns { mode:'compare', results, ranked }" },
+  example: { request: "GET /api/analyze?asset=ETH", curl: 'curl "https://<your-deploy>/api/analyze?asset=ETH"' },
   policy: { stateless: true, readOnly: true, authRequired: false, paymentRequired: false },
   disclaimer: DISCLAIMER,
   model: MODEL,
 } as const;
 
 // ---------------------------- Groq analysis --------------------------------
-function buildMessages(asset: string, ctx: string[], question?: string) {
+function buildMessages(
+  asset: string,
+  ctx: string[],
+  factors: RiskFactor[],
+  riskScore: number,
+  question?: string
+) {
   const dataBlock = ctx.length
-    ? `LIVE MARKET DATA (fetched just now from public APIs — treat as ground truth):\n${ctx
-        .map((l) => `- ${l}`)
+    ? `LIVE MARKET DATA (fetched just now — treat as ground truth):\n${ctx.map((l) => `- ${l}`).join("\n")}`
+    : "LIVE MARKET DATA: none available (resolution failed). Analyze qualitatively and keep confidence low.";
+
+  const riskBlock = factors.length
+    ? `COMPUTED RISK MODEL (already scored deterministically; overall ${riskScore}/100):\n${factors
+        .map((f) => `- ${f.label}: ${f.score}/100 — ${f.note}`)
         .join("\n")}`
-    : "LIVE MARKET DATA: none available for this asset (resolution failed). Analyze qualitatively and lower your confidence accordingly.";
+    : "COMPUTED RISK MODEL: insufficient data.";
 
   const system = [
     "You are SENTINEL, a DeFi market and risk analyst agent.",
-    "You are given an asset and, when available, LIVE market data. Ground every claim in that data; never contradict the provided numbers and never invent precise figures that were not given.",
-    "You provide INFORMATIONAL ANALYSIS ONLY. Never give financial, investment, or trading advice; never tell anyone to buy, sell, or hold.",
-    "Reason over standard DeFi risk factors: liquidity/volume, volatility, market cap size, TVL, smart-contract and custody risk, concentration, and market structure.",
+    "You are given an asset, LIVE market data, and a pre-computed risk model. Ground every claim in that data; never contradict the numbers or the risk model, and never invent figures that were not given.",
+    "You provide INFORMATIONAL ANALYSIS ONLY. Never give financial/investment/trading advice; never tell anyone to buy, sell, or hold.",
     "Respond with ONLY a single JSON object, no prose, no markdown fences, exactly this shape:",
     "{",
-    '  "summary": string (2-4 sentence neutral overview grounded in the data),',
-    '  "sentiment": "bullish" | "neutral" | "bearish",',
-    '  "riskScore": number (0-100; 0 = safest, 100 = riskiest),',
-    '  "signals": string[] (3-6 short, specific observations a watcher should note)',
+    '  "summary": string (2-4 sentence neutral overview that references the data and the main risk drivers),',
+    '  "sentiment": "bullish" | "neutral" | "bearish" (momentum/positioning, not advice),',
+    '  "signals": string[] (3-6 short, specific observations grounded in the data/risk model)',
     "}",
   ].join("\n");
 
-  const user = [
-    `Asset: ${asset}`,
-    dataBlock,
-    question ? `Question: ${question}` : "",
-  ]
+  const user = [`Asset: ${asset}`, dataBlock, riskBlock, question ? `Question: ${question}` : ""]
     .filter(Boolean)
     .join("\n\n");
 
@@ -145,19 +152,10 @@ function coerceSentiment(v: unknown): Sentiment {
   const s = String(v ?? "").toLowerCase();
   return (SENTIMENTS as readonly string[]).includes(s) ? (s as Sentiment) : "neutral";
 }
-
-function clampScore(v: unknown): number {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return 50;
-  return Math.max(0, Math.min(100, Math.round(n)));
+function coerceSignals(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.map((s) => String(s).slice(0, 200)).filter(Boolean).slice(0, 8);
 }
-
-function riskLevelFromScore(score: number): RiskLevel {
-  if (score <= 33) return "low";
-  if (score <= 66) return "medium";
-  return "high";
-}
-
 function mergeMetrics(
   seeded: { label: string; value: string }[],
   modelMetrics: unknown
@@ -180,21 +178,11 @@ function mergeMetrics(
   }
   return out.slice(0, 8);
 }
-
-function coerceSignals(v: unknown): string[] {
-  if (!Array.isArray(v)) return [];
-  return v.map((s) => String(s).slice(0, 200)).filter(Boolean).slice(0, 8);
-}
-
-function confidenceFrom(d: MarketData): Confidence {
-  const hasPrice = d.priceUsd != null;
-  const hasSize = d.marketCapUsd != null || d.tvlUsd != null;
-  if (hasPrice && hasSize) return "high";
-  if (hasPrice || hasSize) return "medium";
+function confidenceFrom(sourcesCount: number, hasPrice: boolean): Confidence {
+  if (hasPrice && sourcesCount >= 2) return "high";
+  if (hasPrice || sourcesCount >= 1) return "medium";
   return "low";
 }
-
-// Try strict JSON, then extract the first {...} block, never throw on prose.
 function parseModelJson(raw: string): Record<string, unknown> {
   const attempt = (t: string) => {
     try {
@@ -219,17 +207,16 @@ async function analyze(asset: string, question?: string): Promise<AnalyzeResult>
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new UpstreamError("Analysis service is not configured.");
 
-  // 1) Live data (never throws; returns partials on failure).
   const market = await gatherMarketData(asset);
   const { contextLines, seededMetrics } = marketDataContext(market);
+  const risk = computeRiskModel(market);
 
-  // 2) Model reasons over the data.
   const client = new Groq({ apiKey });
   let content: string;
   try {
     const completion = await client.chat.completions.create({
       model: MODEL,
-      messages: buildMessages(asset, contextLines, question),
+      messages: buildMessages(asset, contextLines, risk.factors, risk.riskScore, question),
       temperature: 0.2,
       max_tokens: 900,
       response_format: { type: "json_object" },
@@ -240,18 +227,20 @@ async function analyze(asset: string, question?: string): Promise<AnalyzeResult>
   }
 
   const parsed = parseModelJson(content);
-  const riskScore = clampScore(parsed.riskScore);
 
   return {
     asset,
-    resolved: { name: market.resolvedName, symbol: market.symbol },
-    summary:
-      String(parsed.summary ?? "").trim() ||
-      "No summary was produced for this asset.",
+    resolved: {
+      name: market.resolvedName,
+      symbol: market.symbol,
+      contractAddress: market.contractAddress,
+    },
+    summary: String(parsed.summary ?? "").trim() || "No summary was produced for this asset.",
     sentiment: coerceSentiment(parsed.sentiment),
-    riskLevel: riskLevelFromScore(riskScore),
-    riskScore,
-    confidence: confidenceFrom(market),
+    riskLevel: risk.riskLevel,
+    riskScore: risk.riskScore,
+    riskFactors: risk.factors,
+    confidence: confidenceFrom(market.dataSources.length, market.priceUsd != null),
     keyMetrics: mergeMetrics(seededMetrics, parsed.keyMetrics),
     signals: coerceSignals(parsed.signals),
     data: {
@@ -259,8 +248,12 @@ async function analyze(asset: string, question?: string): Promise<AnalyzeResult>
       marketCapUsd: market.marketCapUsd,
       vol24hUsd: market.vol24hUsd,
       change24hPct: market.change24hPct,
+      change7dPct: market.change7dPct,
+      change30dPct: market.change30dPct,
+      volatility30dPct: market.volatility30dPct,
       tvlUsd: market.tvlUsd,
       marketCapRank: market.marketCapRank,
+      spark: market.spark,
     },
     dataSources: market.dataSources,
     disclaimer: DISCLAIMER,
@@ -275,17 +268,11 @@ export async function GET(request: Request) {
   const asset = searchParams.get("asset");
   if (!asset) return json(USAGE, 200);
 
-  const parsed = InputSchema.safeParse({
-    asset,
-    question: searchParams.get("question") ?? undefined,
-  });
+  const parsed = InputSchema.safeParse({ asset, question: searchParams.get("question") ?? undefined });
   if (!parsed.success) {
-    return json(
-      { error: "Invalid input", details: parsed.error.issues.map((i) => i.message) },
-      400
-    );
+    return json({ error: "Invalid input", details: parsed.error.issues.map((i) => i.message) }, 400);
   }
-  return runAnalysis(parsed.data.asset, parsed.data.question);
+  return dispatch(parsed.data.asset, parsed.data.question);
 }
 
 export async function POST(request: Request) {
@@ -297,12 +284,16 @@ export async function POST(request: Request) {
   }
   const parsed = InputSchema.safeParse(body);
   if (!parsed.success) {
-    return json(
-      { error: "Invalid input", details: parsed.error.issues.map((i) => i.message) },
-      400
-    );
+    return json({ error: "Invalid input", details: parsed.error.issues.map((i) => i.message) }, 400);
   }
-  return runAnalysis(parsed.data.asset, parsed.data.question);
+  return dispatch(parsed.data.asset, parsed.data.question);
+}
+
+// Compare mode when the asset field is a comma-separated list.
+async function dispatch(asset: string, question?: string) {
+  const parts = Array.from(new Set(asset.split(",").map((a) => a.trim()).filter(Boolean)));
+  if (parts.length > 1) return runCompare(parts.slice(0, MAX_COMPARE));
+  return runAnalysis(parts[0] ?? asset, question);
 }
 
 async function runAnalysis(asset: string, question?: string) {
@@ -311,5 +302,43 @@ async function runAnalysis(asset: string, question?: string) {
   } catch (err) {
     const message = err instanceof UpstreamError ? err.message : "Analysis failed.";
     return json({ error: "Analysis failed", details: message }, 502);
+  }
+}
+
+async function runCompare(assets: string[]) {
+  try {
+    const settled = await Promise.all(
+      assets.map((a) => analyze(a).catch(() => null))
+    );
+    const results = settled.filter((r): r is AnalyzeResult => r !== null);
+    if (results.length === 0) {
+      return json({ error: "Analysis failed", details: "No assets could be analyzed." }, 502);
+    }
+    const ranked = [...results]
+      .sort((a, b) => a.riskScore - b.riskScore)
+      .map((r) => ({
+        asset: r.asset,
+        symbol: r.resolved.symbol,
+        riskScore: r.riskScore,
+        riskLevel: r.riskLevel,
+        sentiment: r.sentiment,
+        priceUsd: r.data.priceUsd,
+        change24hPct: r.data.change24hPct,
+      }));
+    return json(
+      {
+        mode: "compare",
+        assets,
+        ranked,
+        safest: ranked[0]?.asset,
+        results,
+        disclaimer: DISCLAIMER,
+        model: MODEL,
+        generatedAt: new Date().toISOString(),
+      },
+      200
+    );
+  } catch {
+    return json({ error: "Analysis failed", details: "Compare failed." }, 502);
   }
 }
